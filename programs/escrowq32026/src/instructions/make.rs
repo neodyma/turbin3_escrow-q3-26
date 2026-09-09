@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{Escrow, ESCROW_SEED};
+use crate::{error::ErrorCode, Escrow, ESCROW_SEED};
 use anchor_spl::{
     associated_token::AssociatedToken,
     token_interface::{transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked},
@@ -47,6 +47,17 @@ pub struct Make<'info> {
     pub system_program: Program<'info, System>,
 }
 impl<'info> Make<'info> {
+    pub fn validate(&self, deposit: u64, receive: u64) -> Result<()> {
+        require!(deposit > 0, ErrorCode::InvalidDepositAmount);
+        require!(receive > 0, ErrorCode::InvalidReceiveAmount);
+        require!(
+            self.mint_a.key() != self.mint_b.key(),
+            ErrorCode::IdenticalMints
+        );
+
+        Ok(())
+    }
+
     //Initialize escrow
     pub fn init_escrow(
         &mut self,
