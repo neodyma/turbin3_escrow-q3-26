@@ -70,18 +70,44 @@ pub struct Take<'info> {
 
 impl<'info> Take<'info> {
     pub fn take(&mut self) -> Result<()> {
-        require!(
-            self.escrow.receive > 0,
-            ErrorCode::InvalidReceiveAmount
-        );
+        require!(self.escrow.receive > 0, ErrorCode::InvalidReceiveAmount);
         require!(self.vault.amount > 0, ErrorCode::EmptyVault);
 
-        self.deposit()?;
+        let receive = self.current_receive_amount()?;
+
+        self.deposit(receive)?;
         self.withdraw()?;
         self.close_vault()
     }
 
-    fn deposit(&mut self) -> Result<()> {
+    fn current_receive_amount(&self) -> Result<u64> {
+        let now = Clock::get()?.unix_timestamp;
+
+        require!(now >= self.escrow.starts_at, ErrorCode::AuctionNotStarted);
+        require!(now < self.escrow.expiration, ErrorCode::EscrowExpired);
+
+        if now < self.escrow.exclusive_until {
+            require!(
+                self.escrow.preferred_taker == Some(self.taker.key()),
+                ErrorCode::PreferredTakerOnly
+            );
+            return Ok(self.escrow.receive);
+        }
+
+        if now >= self.escrow.decay_ends_at {
+            return Ok(self.escrow.minimum_receive);
+        }
+
+        let elapsed = (i128::from(now) - i128::from(self.escrow.exclusive_until)) as u128;
+        let duration = (i128::from(self.escrow.decay_ends_at)
+            - i128::from(self.escrow.exclusive_until)) as u128;
+        let price_range = u128::from(self.escrow.receive - self.escrow.minimum_receive);
+        let discount = price_range * elapsed / duration;
+
+        Ok(self.escrow.receive - discount as u64)
+    }
+
+    fn deposit(&mut self, receive: u64) -> Result<()> {
         let cpi_accounts = TransferChecked {
             from: self.taker_ata_b.to_account_info(),
             mint: self.mint_b.to_account_info(),
@@ -91,7 +117,7 @@ impl<'info> Take<'info> {
 
         let cpi_ctx = CpiContext::new(self.token_program.key(), cpi_accounts);
 
-        transfer_checked(cpi_ctx, self.escrow.receive, self.mint_b.decimals)
+        transfer_checked(cpi_ctx, receive, self.mint_b.decimals)
     }
 
     fn withdraw(&mut self) -> Result<()> {

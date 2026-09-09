@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{error::ErrorCode, Escrow, ESCROW_SEED};
+use crate::{error::ErrorCode, AuctionTerms, Escrow, ESCROW_SEED};
 use anchor_spl::{
     associated_token::AssociatedToken,
     token_interface::{transfer_checked, Mint, TokenAccount, TokenInterface, TransferChecked},
@@ -47,33 +47,55 @@ pub struct Make<'info> {
     pub system_program: Program<'info, System>,
 }
 impl<'info> Make<'info> {
-    pub fn validate(&self, deposit: u64, receive: u64) -> Result<()> {
+    pub fn validate(&self, deposit: u64, terms: &AuctionTerms) -> Result<()> {
         require!(deposit > 0, ErrorCode::InvalidDepositAmount);
-        require!(receive > 0, ErrorCode::InvalidReceiveAmount);
+        require!(terms.receive > 0, ErrorCode::InvalidReceiveAmount);
+        require!(
+            terms.minimum_receive > 0,
+            ErrorCode::InvalidMinimumReceiveAmount
+        );
+        require!(
+            terms.receive >= terms.minimum_receive,
+            ErrorCode::InvalidPriceRange
+        );
         require!(
             self.mint_a.key() != self.mint_b.key(),
             ErrorCode::IdenticalMints
+        );
+
+        let now = Clock::get()?.unix_timestamp;
+        let valid_timestamps = terms.starts_at > now
+            && terms.starts_at <= terms.exclusive_until
+            && terms.exclusive_until < terms.decay_ends_at
+            && terms.decay_ends_at < terms.expiration;
+        let valid_exclusive_window = match terms.preferred_taker {
+            Some(_) => terms.starts_at < terms.exclusive_until,
+            None => terms.starts_at == terms.exclusive_until,
+        };
+
+        require!(
+            valid_timestamps && valid_exclusive_window,
+            ErrorCode::InvalidAuctionSchedule
         );
 
         Ok(())
     }
 
     //Initialize escrow
-    pub fn init_escrow(
-        &mut self,
-        seed: u64,
-        receive: u64,
-        bumps: &MakeBumps,
-        expiration: i64,
-    ) -> Result<()> {
+    pub fn init_escrow(&mut self, seed: u64, terms: AuctionTerms, bumps: &MakeBumps) -> Result<()> {
         self.escrow.set_inner(Escrow {
             seed,
             maker: self.maker.key(),
             mint_a: self.mint_a.key(),
             mint_b: self.mint_b.key(),
-            receive: receive,
+            receive: terms.receive,
+            minimum_receive: terms.minimum_receive,
+            preferred_taker: terms.preferred_taker,
+            starts_at: terms.starts_at,
+            exclusive_until: terms.exclusive_until,
+            decay_ends_at: terms.decay_ends_at,
             bump: bumps.escrow,
-            expiration: expiration,
+            expiration: terms.expiration,
         });
         Ok(())
     }
